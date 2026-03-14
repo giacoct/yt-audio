@@ -1,23 +1,12 @@
-// Keep local state per URL to avoid repeated click spam.
+// Track URL-level state to prevent repeated submissions for in-flight items.
 const localUrlState = new Map();
-const pollingTimers = new Map();
 
 const DEFAULT_SERVER_HOST = '127.0.0.1';
 const DEFAULT_SERVER_PORT = 5000;
+const POLL_INTERVAL_MS = 1200;
 
-// Status-to-badge mapping; badge is the visual overlay on the extension icon.
-const STATUS_UI = {
-  idle: { text: '', color: '#00000000' },
-  queued: { text: 'Q', color: '#808080' },
-  downloading: { text: '↓', color: '#1e90ff' },
-  completed: { text: '✓', color: '#2e8b57' },
-  failed: { text: '!', color: '#d32f2f' }
-};
-
-let pulseOn = false;
-setInterval(() => {
-  pulseOn = !pulseOn;
-}, 700);
+let progressTimer = null;
+let cachedBaseIcon = null;
 
 async function getServerBase() {
   const stored = await chrome.storage.local.get({
@@ -36,28 +25,6 @@ function isYouTubeUrl(url) {
   }
 }
 
-async function setActionStatus(tabId, status) {
-  const ui = STATUS_UI[status] || STATUS_UI.idle;
-  let color = ui.color;
-  if (status === 'downloading') {
-    color = pulseOn ? '#1e90ff' : '#0d47a1';
-  }
-
-  await chrome.action.setBadgeBackgroundColor({ tabId, color });
-  await chrome.action.setBadgeText({ tabId, text: ui.text });
-}
-
-async function fetchServerStatus(url) {
-  const serverBase = await getServerBase();
-  const endpoint = `${serverBase}/status?url=${encodeURIComponent(url)}`;
-  const response = await fetch(endpoint, { method: 'GET' });
-  if (!response.ok) {
-    throw new Error(`Status request failed: ${response.status}`);
-  }
-  const body = await response.json();
-  return body.status || 'idle';
-}
-
 async function enqueueUrl(url) {
   const serverBase = await getServerBase();
   const response = await fetch(`${serverBase}/url`, {
@@ -74,39 +41,108 @@ async function enqueueUrl(url) {
   return body;
 }
 
-function startPolling(tabId, url) {
-  if (pollingTimers.has(url)) {
-    clearInterval(pollingTimers.get(url));
+async function fetchOverallProgress() {
+  const serverBase = await getServerBase();
+  const response = await fetch(`${serverBase}/progress`, { method: 'GET' });
+  if (!response.ok) {
+    throw new Error(`Progress request failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+function getRingColor(status) {
+  if (status === 'failed') {
+    return '#d32f2f';
+  }
+  if (status === 'completed') {
+    return '#2e8b57';
+  }
+  if (status === 'queued') {
+    return '#808080';
+  }
+  return '#1e90ff';
+}
+
+async function loadBaseIcon() {
+  if (cachedBaseIcon) {
+    return cachedBaseIcon;
   }
 
-  const timer = setInterval(async () => {
+  try {
+    const response = await fetch(chrome.runtime.getURL('icons/icon128.png'));
+    const blob = await response.blob();
+    cachedBaseIcon = await createImageBitmap(blob);
+  } catch (error) {
+    console.warn('Base icon not available yet; drawing progress ring only.', error);
+    cachedBaseIcon = null;
+  }
+
+  return cachedBaseIcon;
+}
+
+async function setCircularProgressIcon(progress) {
+  const size = 128;
+  const canvas = new OffscreenCanvas(size, size);
+  const ctx = canvas.getContext('2d');
+  const iconImage = await loadBaseIcon();
+
+  // Draw base icon if present (user can manually provide icon files later).
+  if (iconImage) {
+    ctx.drawImage(iconImage, 0, 0, size, size);
+  }
+
+  if (!progress || progress.total === 0) {
+    const imageData = ctx.getImageData(0, 0, size, size);
+    await chrome.action.setIcon({ imageData: { 128: imageData } });
+    await chrome.action.setTitle({ title: 'Queue YouTube audio download' });
+    return;
+  }
+
+  const center = size / 2;
+  const radius = 60;
+  const thickness = 10;
+  const pct = Math.max(0, Math.min(100, Number(progress.percent || 0)));
+  const sweep = (Math.PI * 2 * pct) / 100;
+
+  // Background ring.
+  ctx.strokeStyle = 'rgba(120, 120, 120, 0.45)';
+  ctx.lineWidth = thickness;
+  ctx.beginPath();
+  ctx.arc(center, center, radius, -Math.PI / 2, Math.PI * 1.5);
+  ctx.stroke();
+
+  // Progress ring.
+  ctx.strokeStyle = getRingColor(progress.status);
+  ctx.lineCap = 'round';
+  ctx.lineWidth = thickness;
+  ctx.beginPath();
+  ctx.arc(center, center, radius, -Math.PI / 2, -Math.PI / 2 + sweep);
+  ctx.stroke();
+
+  const title = `Downloads: ${pct}% (${progress.completed + progress.failed}/${progress.total})`;
+  await chrome.action.setTitle({ title });
+  const imageData = ctx.getImageData(0, 0, size, size);
+  await chrome.action.setIcon({ imageData: { 128: imageData } });
+}
+
+function startGlobalProgressPolling() {
+  if (progressTimer) {
+    return;
+  }
+
+  progressTimer = setInterval(async () => {
     try {
-      const status = await fetchServerStatus(url);
-      localUrlState.set(url, status);
-      await setActionStatus(tabId, status);
-
-      if (status === 'completed' || status === 'failed' || status === 'idle') {
-        clearInterval(timer);
-        pollingTimers.delete(url);
-      }
+      const progress = await fetchOverallProgress();
+      await setCircularProgressIcon(progress);
     } catch (error) {
-      console.error('Polling error:', error);
-      localUrlState.set(url, 'failed');
-      await setActionStatus(tabId, 'failed');
-      clearInterval(timer);
-      pollingTimers.delete(url);
+      console.error('Progress polling error:', error);
     }
-  }, 1500);
-
-  pollingTimers.set(url, timer);
+  }, POLL_INTERVAL_MS);
 }
 
 chrome.action.onClicked.addListener(async (tab) => {
-  const tabId = tab.id;
   const url = tab.url || '';
-
-  if (!tabId || !isYouTubeUrl(url)) {
-    await setActionStatus(tabId, 'failed');
+  if (!isYouTubeUrl(url)) {
     return;
   }
 
@@ -117,25 +153,37 @@ chrome.action.onClicked.addListener(async (tab) => {
 
   try {
     localUrlState.set(url, 'queued');
-    await setActionStatus(tabId, 'queued');
-    await enqueueUrl(url);
-    startPolling(tabId, url);
+    const response = await enqueueUrl(url);
+
+    // Deduped URLs may return empty queued list; treat as still active if the source is in progress.
+    if (response.source_status === 'queued' || response.source_status === 'downloading') {
+      localUrlState.set(url, response.source_status);
+    }
+
+    startGlobalProgressPolling();
+    const progress = await fetchOverallProgress();
+    await setCircularProgressIcon(progress);
   } catch (error) {
     console.error('Queue request failed:', error);
-    localUrlState.set(url, 'failed');
-    await setActionStatus(tabId, 'failed');
   }
 });
 
-chrome.tabs.onActivated.addListener(async ({ tabId }) => {
-  const tab = await chrome.tabs.get(tabId);
-  const status = localUrlState.get(tab.url || '') || 'idle';
-  await setActionStatus(tabId, status);
+// Keep global progress ring refreshed on lifecycle events.
+chrome.runtime.onStartup.addListener(startGlobalProgressPolling);
+chrome.runtime.onInstalled.addListener(startGlobalProgressPolling);
+chrome.tabs.onActivated.addListener(async () => {
+  try {
+    await setCircularProgressIcon(await fetchOverallProgress());
+  } catch {
+    // Ignore transient server errors.
+  }
 });
-
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo) => {
   if (changeInfo.status === 'complete') {
-    const status = localUrlState.get(tab.url || '') || 'idle';
-    await setActionStatus(tabId, status);
+    try {
+      await setCircularProgressIcon(await fetchOverallProgress());
+    } catch {
+      // Ignore transient server errors.
+    }
   }
 });

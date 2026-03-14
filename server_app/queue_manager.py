@@ -40,6 +40,42 @@ class DownloadQueueManager:
             return "failed"
         return "idle"
 
+    def get_overall_progress(self) -> dict:
+        """Return aggregated progress across all known downloads."""
+        with self.state_lock:
+            statuses = list(self.item_status.values())
+
+        total = len(statuses)
+        queued = sum(1 for status in statuses if status == "queued")
+        downloading = sum(1 for status in statuses if status == "downloading")
+        completed = sum(1 for status in statuses if status == "completed")
+        failed = sum(1 for status in statuses if status == "failed")
+
+        # Failed entries are considered finished for progress accounting.
+        finished = completed + failed
+        percent = int((finished / total) * 100) if total else 0
+
+        overall_status = "idle"
+        if total > 0:
+            if downloading > 0:
+                overall_status = "downloading"
+            elif queued > 0:
+                overall_status = "queued"
+            elif finished == total and failed == 0:
+                overall_status = "completed"
+            elif finished == total and failed > 0:
+                overall_status = "failed"
+
+        return {
+            "status": overall_status,
+            "total": total,
+            "queued": queued,
+            "downloading": downloading,
+            "completed": completed,
+            "failed": failed,
+            "percent": percent,
+        }
+
     def get_status(self, source_url: str) -> str:
         with self.state_lock:
             if source_url in self.item_status:

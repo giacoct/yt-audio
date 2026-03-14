@@ -5,7 +5,7 @@
 - Chrome extension toolbar button sends the current YouTube URL to a local Flask server.
 - Supports single videos and playlists.
 - FIFO queue (one active download), deduplication, and MP3 conversion.
-- Extension icon badge reflects status (`Q`, `↓`, `✓`, `!`).
+- Extension icon shows a single aggregated circular progress ring across all downloads.
 - Extension **Settings page** lets you edit all server runtime settings.
 
 ## Project layout
@@ -72,10 +72,10 @@ These are sent to `POST /settings` and persisted in `settings.json`.
 1. Start `python server.py`
 2. Open a YouTube video or playlist tab
 3. Click the extension toolbar icon
-4. Badge shows progress:
-   - `Q` queued
-   - `↓` downloading (animated color pulse)
-   - `✓` completed
-   - `!` failed
+4. Extension icon shows one circular progress ring for all downloads combined.
+   - Blue: downloading in progress
+   - Grey: queued but not started
+   - Green: all finished successfully
+   - Red: finished with one or more failures
 
 Downloaded files are renamed to `Artist - Title.mp3` with cleaned titles and ID3 tags.

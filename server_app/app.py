@@ -66,6 +66,10 @@ def create_app() -> tuple[Flask, DownloadQueueManager, ServerSettings]:
 
         return jsonify({"saved": True, **asdict(settings)})
 
+    @app.route("/progress", methods=["GET"])
+    def progress_endpoint():
+        return jsonify(queue_manager.get_overall_progress())
+
     @app.route("/health", methods=["GET"])
     def health_endpoint():
         return jsonify({"ok": True})
