@@ -5,7 +5,7 @@
 - Chrome extension toolbar button sends the current YouTube URL to a local Flask server.
 - Supports single videos and playlists.
 - FIFO queue (one active download), deduplication, and MP3 conversion.
-- Extension icon shows a single aggregated circular progress ring across all downloads.
+- Extension icon shows a single aggregated circular progress ring across all downloads (thicker/larger ring + immediate feedback right after click).
 - Extension **Settings page** lets you edit all server runtime settings.
 
 ## Project layout
@@ -78,4 +78,4 @@ These are sent to `POST /settings` and persisted in `settings.json`.
    - Green: all finished successfully
    - Red: finished with one or more failures
 
-Downloaded files are renamed to `Artist - Title.mp3` with cleaned titles and ID3 tags.
+Downloaded files are renamed to `Artist - Title.mp3` with cleaned titles (including Italian noise like `Video Musicale Ufficiale`) and ID3 tags.

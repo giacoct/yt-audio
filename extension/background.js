@@ -99,8 +99,8 @@ async function setCircularProgressIcon(progress) {
   }
 
   const center = size / 2;
-  const radius = 60;
-  const thickness = 10;
+  const radius = 56;
+  const thickness = 16;
   const pct = Math.max(0, Math.min(100, Number(progress.percent || 0)));
   const sweep = (Math.PI * 2 * pct) / 100;
 
@@ -153,6 +153,18 @@ chrome.action.onClicked.addListener(async (tab) => {
 
   try {
     localUrlState.set(url, 'queued');
+
+    // Immediate visual feedback before network round-trip completes.
+    await setCircularProgressIcon({
+      status: 'queued',
+      total: 1,
+      queued: 1,
+      downloading: 0,
+      completed: 0,
+      failed: 0,
+      percent: 5
+    });
+
     const response = await enqueueUrl(url);
 
     // Deduped URLs may return empty queued list; treat as still active if the source is in progress.
