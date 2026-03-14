@@ -19,6 +19,10 @@ NOISE_PATTERNS = [
     r"\bvisuali[sz]er\b",
     r"\(audio\)",
     r"\[audio\]",
+    r"\(video\s*musicale\s*ufficiale\)",
+    r"\[video\s*musicale\s*ufficiale\]",
+    r"\(testo\)",
+    r"\[testo\]",
 ]
 
 
