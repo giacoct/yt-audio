@@ -6,7 +6,6 @@ const DEFAULT_SERVER_PORT = 5000;
 const POLL_INTERVAL_MS = 1200;
 
 let progressTimer = null;
-let cachedBaseIcon = null;
 
 async function getServerBase() {
   const stored = await chrome.storage.local.get({
@@ -50,79 +49,32 @@ async function fetchOverallProgress() {
   return response.json();
 }
 
-function getRingColor(status) {
-  if (status === 'failed') {
-    return '#d32f2f';
-  }
-  if (status === 'completed') {
-    return '#2e8b57';
-  }
-  if (status === 'queued') {
-    return '#808080';
-  }
-  return '#1e90ff';
-}
+async function setDotIndicator(status) {
+  // Badge is displayed at top-right and acts as the requested status dot.
+  const colorByStatus = {
+    queued: '#f4c430',
+    downloading: '#f4c430',
+    completed: '#2e8b57'
+  };
 
-async function loadBaseIcon() {
-  if (cachedBaseIcon) {
-    return cachedBaseIcon;
-  }
-
-  try {
-    const response = await fetch(chrome.runtime.getURL('icons/icon128.png'));
-    const blob = await response.blob();
-    cachedBaseIcon = await createImageBitmap(blob);
-  } catch (error) {
-    console.warn('Base icon not available yet; drawing progress ring only.', error);
-    cachedBaseIcon = null;
-  }
-
-  return cachedBaseIcon;
-}
-
-async function setCircularProgressIcon(progress) {
-  const size = 128;
-  const canvas = new OffscreenCanvas(size, size);
-  const ctx = canvas.getContext('2d');
-  const iconImage = await loadBaseIcon();
-
-  // Draw base icon if present (user can manually provide icon files later).
-  if (iconImage) {
-    ctx.drawImage(iconImage, 0, 0, size, size);
-  }
-
-  if (!progress || progress.total === 0) {
-    const imageData = ctx.getImageData(0, 0, size, size);
-    await chrome.action.setIcon({ imageData: { 128: imageData } });
+  if (!status || status === 'idle' || status === 'failed') {
+    await chrome.action.setBadgeText({ text: '' });
     await chrome.action.setTitle({ title: 'Queue YouTube audio download' });
     return;
   }
 
-  const center = size / 2;
-  const radius = 56;
-  const thickness = 16;
-  const pct = Math.max(0, Math.min(100, Number(progress.percent || 0)));
-  const sweep = (Math.PI * 2 * pct) / 100;
+  await chrome.action.setBadgeText({ text: '●' });
+  await chrome.action.setBadgeBackgroundColor({ color: colorByStatus[status] || '#f4c430' });
+  await chrome.action.setTitle({ title: `Downloads status: ${status}` });
+}
 
-  // Background ring.
-  ctx.strokeStyle = 'rgba(120, 120, 120, 0.45)';
-  ctx.lineWidth = thickness;
-  ctx.beginPath();
-  ctx.arc(center, center, radius, -Math.PI / 2, Math.PI * 1.5);
-  ctx.stroke();
-
-  // Progress ring.
-  ctx.strokeStyle = getRingColor(progress.status);
-  ctx.lineCap = 'round';
-  ctx.lineWidth = thickness;
-  ctx.beginPath();
-  ctx.arc(center, center, radius, -Math.PI / 2, -Math.PI / 2 + sweep);
-  ctx.stroke();
-
-  const title = `Downloads: ${pct}% (${progress.completed + progress.failed}/${progress.total})`;
-  await chrome.action.setTitle({ title });
-  const imageData = ctx.getImageData(0, 0, size, size);
-  await chrome.action.setIcon({ imageData: { 128: imageData } });
+async function refreshGlobalIndicator() {
+  try {
+    const progress = await fetchOverallProgress();
+    await setDotIndicator(progress.status);
+  } catch (error) {
+    console.error('Progress polling error:', error);
+  }
 }
 
 function startGlobalProgressPolling() {
@@ -130,14 +82,7 @@ function startGlobalProgressPolling() {
     return;
   }
 
-  progressTimer = setInterval(async () => {
-    try {
-      const progress = await fetchOverallProgress();
-      await setCircularProgressIcon(progress);
-    } catch (error) {
-      console.error('Progress polling error:', error);
-    }
-  }, POLL_INTERVAL_MS);
+  progressTimer = setInterval(refreshGlobalIndicator, POLL_INTERVAL_MS);
 }
 
 chrome.action.onClicked.addListener(async (tab) => {
@@ -152,50 +97,31 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 
   try {
+    // Immediate visual feedback as requested.
     localUrlState.set(url, 'queued');
-
-    // Immediate visual feedback before network round-trip completes.
-    await setCircularProgressIcon({
-      status: 'queued',
-      total: 1,
-      queued: 1,
-      downloading: 0,
-      completed: 0,
-      failed: 0,
-      percent: 5
-    });
+    await setDotIndicator('queued');
 
     const response = await enqueueUrl(url);
 
-    // Deduped URLs may return empty queued list; treat as still active if the source is in progress.
     if (response.source_status === 'queued' || response.source_status === 'downloading') {
       localUrlState.set(url, response.source_status);
     }
 
     startGlobalProgressPolling();
-    const progress = await fetchOverallProgress();
-    await setCircularProgressIcon(progress);
+    await refreshGlobalIndicator();
   } catch (error) {
     console.error('Queue request failed:', error);
   }
 });
 
-// Keep global progress ring refreshed on lifecycle events.
+// Keep global status dot refreshed on lifecycle events.
 chrome.runtime.onStartup.addListener(startGlobalProgressPolling);
 chrome.runtime.onInstalled.addListener(startGlobalProgressPolling);
 chrome.tabs.onActivated.addListener(async () => {
-  try {
-    await setCircularProgressIcon(await fetchOverallProgress());
-  } catch {
-    // Ignore transient server errors.
-  }
+  await refreshGlobalIndicator();
 });
 chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo) => {
   if (changeInfo.status === 'complete') {
-    try {
-      await setCircularProgressIcon(await fetchOverallProgress());
-    } catch {
-      // Ignore transient server errors.
-    }
+    await refreshGlobalIndicator();
   }
 });
