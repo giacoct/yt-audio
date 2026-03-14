@@ -1,9 +1,9 @@
-// Local Flask server base URL.
-const SERVER_BASE = 'http://127.0.0.1:5000';
-
 // Keep local state per URL to avoid repeated click spam.
 const localUrlState = new Map();
 const pollingTimers = new Map();
+
+const DEFAULT_SERVER_HOST = '127.0.0.1';
+const DEFAULT_SERVER_PORT = 5000;
 
 // Status-to-badge mapping; badge is the visual overlay on the extension icon.
 const STATUS_UI = {
@@ -14,11 +14,18 @@ const STATUS_UI = {
   failed: { text: '!', color: '#d32f2f' }
 };
 
-// Lightweight pulse to make "downloading" visually active.
 let pulseOn = false;
 setInterval(() => {
   pulseOn = !pulseOn;
 }, 700);
+
+async function getServerBase() {
+  const stored = await chrome.storage.local.get({
+    serverHost: DEFAULT_SERVER_HOST,
+    serverPort: DEFAULT_SERVER_PORT
+  });
+  return `http://${stored.serverHost}:${stored.serverPort}`;
+}
 
 function isYouTubeUrl(url) {
   try {
@@ -41,7 +48,8 @@ async function setActionStatus(tabId, status) {
 }
 
 async function fetchServerStatus(url) {
-  const endpoint = `${SERVER_BASE}/status?url=${encodeURIComponent(url)}`;
+  const serverBase = await getServerBase();
+  const endpoint = `${serverBase}/status?url=${encodeURIComponent(url)}`;
   const response = await fetch(endpoint, { method: 'GET' });
   if (!response.ok) {
     throw new Error(`Status request failed: ${response.status}`);
@@ -51,7 +59,8 @@ async function fetchServerStatus(url) {
 }
 
 async function enqueueUrl(url) {
-  const response = await fetch(`${SERVER_BASE}/url`, {
+  const serverBase = await getServerBase();
+  const response = await fetch(`${serverBase}/url`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url })
@@ -66,7 +75,6 @@ async function enqueueUrl(url) {
 }
 
 function startPolling(tabId, url) {
-  // Ensure only one timer per URL.
   if (pollingTimers.has(url)) {
     clearInterval(pollingTimers.get(url));
   }
@@ -77,7 +85,6 @@ function startPolling(tabId, url) {
       localUrlState.set(url, status);
       await setActionStatus(tabId, status);
 
-      // Stop polling once terminal state reached.
       if (status === 'completed' || status === 'failed' || status === 'idle') {
         clearInterval(timer);
         pollingTimers.delete(url);
@@ -103,7 +110,6 @@ chrome.action.onClicked.addListener(async (tab) => {
     return;
   }
 
-  // Prevent repeated submits when same URL is already queued/downloading.
   const currentState = localUrlState.get(url);
   if (currentState === 'queued' || currentState === 'downloading') {
     return;
@@ -121,7 +127,6 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 });
 
-// Keep icon consistent when switching tabs.
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
   const tab = await chrome.tabs.get(tabId);
   const status = localUrlState.get(tab.url || '') || 'idle';
